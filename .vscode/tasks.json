@@ -1,0 +1,26 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Build (nimble)",
+			"command":"nimble",
+			"type": "shell",
+			"args": ["build"],
+			"problemMatcher": "$gcc"
+		},
+		{
+			"label": "Build Release (nimble)",
+			"command":"nimble",
+			"type": "shell",
+			"args": ["build", "-d:RELEASE"],
+			"problemMatcher": "$gcc"
+		},
+		{
+			"label": "Run Example 1 (nimble)",
+			"command":"nimble",
+			"type": "shell",
+			"args": ["run", "--", "generate-manifest", "c:/temp/src", "--includes=**", "'--excludes=**/*.{pdf,bic}'"],
+			"problemMatcher": "$gcc"
+		},
+	]
+}
