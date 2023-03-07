@@ -38,14 +38,16 @@ proc help(): void =
   echo "USAGE"
   echo "1.  clevercp copy DIRECTORY_FROM DIRECTORY_TO [--include=INC_GLOB] [--exclude=EXC_GLOB]"
   echo "2.  clevercp generate-manifest DIRECTORY [--include=INC_GLOB] [--exclude=EXC_GLOB]"
-  echo "3.  clevercp validate-manifest DIRECTORY [--include=INC_GLOB] [--exclude=EXC_GLOB]"
+  echo "3.  clevercp validate-manifest DIRECTORY"
   echo ""
   echo "Where:"
   echo "  DIRECTORY_FROM is the base directory from which to copy files"
   echo "  DIRECTORY_TO is the target directory to which files should be copied, if their checksum"
   echo "    does not exist or is not equal to the computed one."
+  echo "  DIRECTORY is the base directory in which to process files"
   echo "  INC_GLOB and EXC_GLOB are globbing patterns as defined here: https://glob.bolingen.me/latest/glob.html"
   echo "    INC_GLOB defines which files to include, and EXC_GLOB defines which files to exclude"
+  echo "    INC_GLOB is ** by default (matches all files), whereas EXC_GLOB is unset."
 
 
 proc parseArgs(): Table[string, string] =
@@ -132,6 +134,7 @@ proc generateManifestCommand(): void =
   echo "VRB: SubCommand = generate-manifest"
   let settings = parseArgs()
 
+  echo settings
   var dirFrom: string = normalizedPath(settings["arg:1"])
   assert dirExists(dirFrom), "directory must exist"
   var includeGlob: string = "**"
