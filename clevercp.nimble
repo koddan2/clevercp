@@ -12,3 +12,4 @@ bin           = @["clevercp"]
 
 requires "nim >= 1.6.10"
 requires "glob >= 0.11.2"
+requires "xxhash >= 0.9.0"

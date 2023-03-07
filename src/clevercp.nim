@@ -1,9 +1,10 @@
 import std/os
 import std/parseopt
-import std/sha1
-# import sequtils, tables
+# import sequtils
 import strutils
+import tables
 import glob
+import xxhash
 
 const privDirName = ".clevercp"
 const hashPathDelim = " | "
@@ -16,9 +17,21 @@ let allArgs = commandLineParams()
 #   readFile paramStr(1)
 #   else: readAll stdin
 
-proc help(): void =
+proc err[Ty](x: varargs[Ty]): void =
+  stderr.write("ERR: ")
+  stderr.writeLine(x)
+
+proc getHashOfFile(path: string): uint64 =
+  let content = readFile(path)
+  if content.len > 0:
+    result = XXH3_64bits(content)
+  else: result = 0
+
+proc echoHeader(): void =
   echo "clevercp version 1.0.0"
   echo ""
+
+proc help(): void =
   echo "This is a tool whose purpose is to minimize file transfers over networks. It tries to do so"
   echo "  by computing checksums of files and storing them in a manifest file."
   echo ""
@@ -35,7 +48,25 @@ proc help(): void =
   echo "    INC_GLOB defines which files to include, and EXC_GLOB defines which files to exclude"
 
 
-proc ensurePrivateDir(base: string) : void =
+proc parseArgs(): Table[string, string] =
+  result = initTable[string, string]()
+  result["sub-command"] = allArgs[0]
+  let allButFirstArgs = allArgs[1..^1]
+  let cliArgs = join(allButFirstArgs, " ")
+  var optParser = initOptParser(cliArgs)
+  var counter = 0
+  while true:
+    counter += 1
+    optParser.next()
+    case optParser.kind
+    of cmdEnd: break
+    of cmdShortOption, cmdLongOption:
+      result[optParser.key] = optParser.val
+    of cmdArgument:
+      result["arg:" & $counter] = optParser.key
+
+
+proc ensurePrivateDir(base: string): void =
   let dirPath = joinPath(base, privDirName)
   if not dirExists(dirPath):
     createDir(dirPath)
@@ -45,52 +76,76 @@ proc copyCommand(): void =
   echo "copy"
 
 
-proc generateManifestCommand(): void =
-  echo "VRB: SubCommand => generate-manifest"
-  let allButFirstArgs = allArgs[1..^1]
-  let cliArgs = join(allButFirstArgs, " ")
-  var optParser = initOptParser(cliArgs)
+proc validateManifestCommand(): void =
+  echo "VRB: SubCommand = validate-manifest"
+  let settings = parseArgs()
+  for key, val in settings:
+    echo key, " = ", val
+  assert settings["sub-command"] == "validate-manifest", "sanity check"
+  let dir = normalizedPath(settings["arg:1"])
+  assert dirExists(dir), "directory must exist"
+  let manifestFilePath = joinPath(dir, relativeManifestPath)
+  assert fileExists(manifestFilePath), "manifest file must exist: " & manifestFilePath
+  # hash => relative-path
+  var hashes = initTable[string, string]()
+  let manifestFile = open(manifestFilePath)
+  defer: close(manifestFile)
 
-  var dirFrom: string = ""
-  var includeGlob: string = ""
+  var line = ""
+  while readLine(manifestFile, line):
+    var idx = 0
+    var ch = line[0]
+    while ch != ' ' and idx < line.len:
+      idx+=1
+      ch = line[idx]
+    var idx2 = idx
+    while ch != '|' and idx2 < line.len:
+      idx2 += 1
+      ch = line[idx2]
+    let hash = substr(line, 0, idx - 1)
+    let path = substr(line, idx2 + 2)
+    hashes[path] = hash
+
+  var allOK = true
+  for path, hashStr in hashes:
+    let pathToFile = joinPath(dir, path)
+    if not fileExists(pathToFile):
+      allOK = false
+      err "Missing file: ", path
+      continue
+    let computedHash = $getHashOfFile(pathToFile)
+    let storedHash = hashStr
+    if computedHash == storedHash:
+      # echo "OK: ", path
+      discard
+    else:
+      allOK = false
+      err "Incorrect checksum: ", path
+  if not allOK:
+    err "Tree is corrupt!"
+    quit(2)
+  else:
+    echo "OK: Tree is valid according to manifest"
+
+
+proc generateManifestCommand(): void =
+  echo "VRB: SubCommand = generate-manifest"
+  let settings = parseArgs()
+
+  var dirFrom: string = normalizedPath(settings["arg:1"])
+  assert dirExists(dirFrom), "directory must exist"
+  var includeGlob: string = "**"
+  if settings.hasKey("includes"):
+    includeGlob = settings["includes"]
   var excludeGlob: string = ""
-  var counter = 0
-  while true:
-    counter += 1
-    optParser.next()
-    case optParser.kind
-    of cmdEnd: break
-    of cmdShortOption, cmdLongOption:
-      if optParser.val == "":
-        echo "ERR: unrecognized option: ", optParser.key
-        quit(QuitFailure)
-      else:
-        echo "VRB:   option(", optParser.key, ") = ", optParser.val
-        if optParser.key == "includes":
-          includeGlob = optParser.val
-        elif optParser.key == "excludes":
-          excludeGlob = optParser.val
-        else:
-          echo "ERR: unrecognized option: ", optParser.key
-          quit(QuitFailure)
-    of cmdArgument:
-      if counter == 1:
-        # assume this is the DIRECTORY_FROM
-        echo "VRB: argument(DIRECTORY) = ", optParser.key
-        dirFrom = normalizedPath(optParser.key)
-        if not dirExists(dirFrom):
-          echo "ERR: directory ", dirFrom, " does not exist"
-          quit(QuitFailure)
-      # elif counter == 2:
-      #   echo "argument(DIRECTORY_TO): ", optParser.key
-      #   dirTo = optParser.key
-      else:
-        echo "ERR: unrecognized argument: ", optParser.key
-        quit(QuitFailure)
+  if settings.hasKey("excludes"):
+    excludeGlob = settings["excludes"]
 
   ensurePrivateDir(dirFrom)
-  var localManifestFile = open(joinPath(dirFrom, relativeManifestPath), fmWrite)
+  let manifestFileFullPath = joinPath(dirFrom, relativeManifestPath)
+  var localManifestFile = open(manifestFileFullPath, fmWrite)
   defer: close(localManifestFile)
+  var counter = 0
   for path in walkGlob(includeGlob, dirFrom):
     if path.startsWith(privDirName):
       # skip private directory
@@ -98,15 +153,16 @@ proc generateManifestCommand(): void =
     elif excludeGlob != "" and path.matches(excludeGlob):
       # skip excluded file
       continue
-    let hashValStr = $secureHashFile(joinPath(dirFrom, path))
-    let manifestRecord = hashValStr & hashPathDelim & path
-    echo manifestRecord
+    # let hashValStr = $secureHashFile(joinPath(dirFrom, path))
+    let hashVal = getHashOfFile(joinPath(dirFrom, path))
+    let manifestRecord = alignLeft($hashVal, len("18446744073709551615")) &
+        hashPathDelim & path
+    counter += 1
+    stdout.write("\r" & $counter)
     writeLine(localManifestFile, manifestRecord)
     flushFile(localManifestFile)
-
-
-proc validateManifestCommand(): void =
-  echo "copy"
+  echo ""
+  echo "Manifest successfully generated: ", manifestFileFullPath
 
 
 proc main(): void =
@@ -116,10 +172,13 @@ proc main(): void =
 
   let firstArg = paramStr(1)
   if firstArg == "copy":
+    echoHeader()
     copyCommand()
   elif firstArg == "generate-manifest":
+    echoHeader()
     generateManifestCommand()
   elif firstArg == "validate-manifest":
+    echoHeader()
     validateManifestCommand()
   else:
     help()
