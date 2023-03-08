@@ -1,6 +1,6 @@
 import std/os
 import std/parseopt
-# import sequtils
+import std/options
 import strutils
 import tables
 import glob
@@ -11,15 +11,21 @@ const hashPathDelim = " | "
 const manifestFileName = "manifest.txt"
 let relativeManifestPath = joinPath(privDirName, manifestFileName)
 
+const maxUint64Str = "18446744073709551615"
+let maxUint64StrLen = len(maxUint64Str)
+
 let allArgs = commandLineParams()
 
-# let code = if paramCount() > 0:
-#   readFile paramStr(1)
-#   else: readAll stdin
 
 proc err[Ty](x: varargs[Ty]): void =
   stderr.write("ERR: ")
   stderr.writeLine(x)
+
+
+proc strOpt(s: string): Option[string] =
+  if s.len != 0: some(s)
+  else: none(string)
+
 
 proc getHashOfFile(path: string): uint64 =
   let content = readFile(path)
@@ -27,9 +33,11 @@ proc getHashOfFile(path: string): uint64 =
     result = XXH3_64bits(content)
   else: result = 0
 
+
 proc echoHeader(): void =
   echo "clevercp version 1.0.0"
   echo ""
+
 
 proc help(): void =
   echo "This is a tool whose purpose is to minimize file transfers over networks. It tries to do so"
@@ -74,22 +82,48 @@ proc ensurePrivateDir(base: string): void =
     createDir(dirPath)
 
 
-proc copyCommand(): void =
-  echo "copy"
+proc computeHashes(includeGlob, dir: string,
+                   excludeGlob: Option[string]): Table[string, uint64] =
+  var counter = 0
+  result = initTable[string, uint64]()
+
+  var exc: string
+  proc filterYieldWithExc(path: string, kind: PathComponent): bool =
+    result = true
+    if path.startsWith(privDirName):
+      result = false
+    elif path.matches(exc):
+      result = false
+
+  proc filterYieldNoExc(path: string, kind: PathComponent): bool =
+    not path.startsWith(privDirName)
+
+  var filterYield: FilterYield
+  if excludeGlob.isSome:
+    exc = excludeGlob.get()
+    filterYield = filterYieldWithExc
+  else:
+    filterYield = filterYieldNoExc
+
+  for path in walkGlob(includeGlob, dir, filterYield = filterYield):
+    # if path.startsWith(privDirName):
+    #   # skip private directory
+    #   continue
+    # elif excludeGlob.isSome and path.matches(excludeGlob.get()):
+    #   # skip excluded file
+    #   continue
+    # lets hash
+    let hashVal = getHashOfFile(joinPath(dir, path))
+    result[path] = hashVal
+    stdout.write("\r" & $counter)
+    counter += 1
 
 
-proc validateManifestCommand(): void =
-  echo "VRB: SubCommand = validate-manifest"
-  let settings = parseArgs()
-  for key, val in settings:
-    echo key, " = ", val
-  assert settings["sub-command"] == "validate-manifest", "sanity check"
-  let dir = normalizedPath(settings["arg:1"])
-  assert dirExists(dir), "directory must exist"
-  let manifestFilePath = joinPath(dir, relativeManifestPath)
-  assert fileExists(manifestFilePath), "manifest file must exist: " & manifestFilePath
+proc readManifest(manifestFilePath: string): Table[string, string] =
   # hash => relative-path
-  var hashes = initTable[string, string]()
+  result = initTable[string, string]()
+  if not fileExists(manifestFilePath):
+    return
   let manifestFile = open(manifestFilePath)
   defer: close(manifestFile)
 
@@ -106,7 +140,20 @@ proc validateManifestCommand(): void =
       ch = line[idx2]
     let hash = substr(line, 0, idx - 1)
     let path = substr(line, idx2 + 2)
-    hashes[path] = hash
+    result[path] = hash
+
+
+proc validateManifestCommand(): void =
+  echo "VRB: SubCommand = validate-manifest"
+  let settings = parseArgs()
+  echo settings
+  assert settings["sub-command"] == "validate-manifest", "sanity check"
+  let dir = normalizedPath(settings["arg:1"])
+  assert dirExists(dir), "directory must exist"
+  let manifestFilePath = joinPath(dir, relativeManifestPath)
+  assert fileExists(manifestFilePath), "manifest file must exist: " & manifestFilePath
+
+  let hashes = readManifest(manifestFilePath)
 
   var allOK = true
   for path, hashStr in hashes:
@@ -130,7 +177,7 @@ proc validateManifestCommand(): void =
     echo "OK: Tree is valid according to manifest"
 
 
-proc generateManifestCommand(): void =
+proc generateManifestCommand(): Table[string, uint64] =
   echo "VRB: SubCommand = generate-manifest"
   let settings = parseArgs()
 
@@ -149,23 +196,80 @@ proc generateManifestCommand(): void =
   var localManifestFile = open(manifestFileFullPath, fmWrite)
   defer: close(localManifestFile)
   var counter = 0
-  for path in walkGlob(includeGlob, dirFrom):
-    if path.startsWith(privDirName):
-      # skip private directory
-      continue
-    elif excludeGlob != "" and path.matches(excludeGlob):
-      # skip excluded file
-      continue
-    # let hashValStr = $secureHashFile(joinPath(dirFrom, path))
-    let hashVal = getHashOfFile(joinPath(dirFrom, path))
-    let manifestRecord = alignLeft($hashVal, len("18446744073709551615")) &
+  let hashes = computeHashes(includeGlob, dirFrom, excludeGlob.strOpt)
+  result = hashes
+  for path, hashVal in hashes:
+    let manifestRecord = alignLeft($hashVal, maxUint64StrLen) &
         hashPathDelim & path
     counter += 1
-    stdout.write("\r" & $counter)
     writeLine(localManifestFile, manifestRecord)
     flushFile(localManifestFile)
   echo ""
   echo "Manifest successfully generated: ", manifestFileFullPath
+
+
+proc copyCommand(): void =
+  echo "VRB: SubCommand = copy"
+  let hashes = generateManifestCommand()
+  let settings = parseArgs()
+
+  var dirFrom: string = normalizedPath(settings["arg:1"])
+  var dirTo: string = normalizedPath(settings["arg:2"])
+  assert dirExists(dirFrom), "directory must exist"
+  if not dirExists(dirTo):
+    createDir(dirTo)
+  var includeGlob: string = "**"
+  if settings.hasKey("includes"):
+    includeGlob = settings["includes"]
+  var excludeGlob: string = ""
+  if settings.hasKey("excludes"):
+    excludeGlob = settings["excludes"]
+
+  let hashesOnTarget = readManifest(joinPath(dirTo, relativeManifestPath))
+
+  var updated = false
+  for path in walkGlob(includeGlob, dirFrom):
+    if path.startsWith(privDirName):
+      # skip private directory
+      continue
+    let fromFile = joinPath(dirFrom, path)
+    let toFile = joinPath(dirTo, path)
+    if not dirExists(parentDir(toFile)):
+      updated = true
+      createDir(parentDir(toFile))
+
+    if not fileExists(toFile):
+      updated = true
+      copyFile(fromFile, toFile, {cfSymlinkIgnore}) # TODO: option
+      echo "VRB: COPY: ", path
+    else:
+      var toFileHash: string = "0"
+      if hashesOnTarget.hasKey(path):
+        toFileHash = hashesOnTarget[path]
+      if $hashes[path] != toFileHash:
+        updated = true
+        copyFile(fromFile, toFile, {cfSymlinkIgnore}) # TODO: option
+        echo "VRB: COPY: ", path
+      else: echo "VRB: SAME: ", path
+
+  if updated:
+    let fromManifestFilePath = joinPath(dirFrom, relativeManifestPath)
+    let toManifestFilePath = joinPath(dirTo, relativeManifestPath)
+    if not dirExists(parentDir(toManifestFilePath)):
+      createDir(parentDir(toManifestFilePath))
+    copyFile(fromManifestFilePath, toManifestFilePath, {cfSymlinkIgnore}) # TODO: option
+    echo "VRB: COPY: ", relativeManifestPath
+  else:
+    echo "INF: No files were copied - trees were equivalent according to manifest."
+
+
+proc copySelfCommand(): void =
+  let self = getAppFilename()
+  let settings = parseArgs()
+  let dirTo = joinPath(settings["arg:1"], privDirName)
+  let target = joinPath(dirTo, extractFilename(self))
+  echo "VRB: SubCommand = copy-self (", self, " => ", target, ")"
+  copyFile(self, target)
 
 
 proc main(): void =
@@ -179,13 +283,16 @@ proc main(): void =
     copyCommand()
   elif firstArg == "generate-manifest":
     echoHeader()
-    generateManifestCommand()
+    discard generateManifestCommand()
   elif firstArg == "validate-manifest":
     echoHeader()
     validateManifestCommand()
+  elif firstArg == "copy-self":
+    copySelfCommand()
   else:
     help()
     quit(QuitFailure)
+
 
 when isMainModule:
   main()

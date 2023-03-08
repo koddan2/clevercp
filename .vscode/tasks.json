@@ -12,9 +12,16 @@
       "label": "Build Release (nimble)",
       "command": "nimble",
       "type": "shell",
-      "args": ["build", "-d:RELEASE"],
+      "args": ["build", "-d:RELEASE", "--opt:speed"],
       "problemMatcher": "$gcc"
     },
+    // {
+    //   "label": "Build DANGER (nimble)",
+    //   "command": "nimble",
+    //   "type": "shell",
+    //   "args": ["build", "-d:DANGER"],
+    //   "problemMatcher": "$gcc"
+    // },
     {
       "label": "Run Example 1",
       "command": "nimble",
@@ -33,12 +40,21 @@
       "label": "Run Example 2",
       "command": "nimble",
       "type": "shell",
-      "args": [
-        "run",
-        "--",
-        "validate-manifest",
-        "c:/temp/src",
-      ],
+      "args": ["run", "--", "validate-manifest", "c:/temp/src"],
+      "problemMatcher": "$gcc"
+    },
+    {
+      "label": "Run Example 3",
+      "command": "nimble",
+      "type": "shell",
+      "args": ["run", "--", "copy", "c:/temp/src", "c:/temp/tgt"],
+      "problemMatcher": "$gcc"
+    },
+    {
+      "label": "Run Example 4",
+      "command": "nimble",
+      "type": "shell",
+      "args": ["run", "--", "copy-self", "c:/temp/tgt"],
       "problemMatcher": "$gcc"
     }
   ]
