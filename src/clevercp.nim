@@ -41,7 +41,8 @@ proc echoHeader(): void =
 
 proc help(): void =
   echo "This is a tool whose purpose is to minimize file transfers over networks. It tries to do so"
-  echo "  by computing checksums of files and storing them in a manifest file."
+  echo "  by computing checksums of files and storing them in a manifest file, then using these pre-"
+  echo "  computed hashes to determine which files have changed and thus need to be copied."
   echo ""
   echo "USAGE"
   echo "1.  clevercp copy DIRECTORY_FROM DIRECTORY_TO [--include=INC_GLOB] [--exclude=EXC_GLOB]"
@@ -106,13 +107,6 @@ proc computeHashes(includeGlob, dir: string,
     filterYield = filterYieldNoExc
 
   for path in walkGlob(includeGlob, dir, filterYield = filterYield):
-    # if path.startsWith(privDirName):
-    #   # skip private directory
-    #   continue
-    # elif excludeGlob.isSome and path.matches(excludeGlob.get()):
-    #   # skip excluded file
-    #   continue
-    # lets hash
     let hashVal = getHashOfFile(joinPath(dir, path))
     result[path] = hashVal
     stdout.write("\r" & $counter)
@@ -123,7 +117,7 @@ proc readManifest(manifestFilePath: string): Table[string, string] =
   # hash => relative-path
   result = initTable[string, string]()
   if not fileExists(manifestFilePath):
-    return
+    raiseAssert("Manifest file must exist")
   let manifestFile = open(manifestFilePath)
   defer: close(manifestFile)
 
@@ -268,8 +262,9 @@ proc copySelfCommand(): void =
   let settings = parseArgs()
   let dirTo = joinPath(settings["arg:1"], privDirName)
   let target = joinPath(dirTo, extractFilename(self))
-  echo "VRB: SubCommand = copy-self (", self, " => ", target, ")"
+  echo "VRB: SubCommand = copy-self"
   copyFile(self, target)
+  echo "VRB: COPY: ", self, " => ", target
 
 
 proc main(): void =
