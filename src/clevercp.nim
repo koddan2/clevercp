@@ -123,18 +123,11 @@ proc readManifest(manifestFilePath: string): Table[string, string] =
 
   var line = ""
   while readLine(manifestFile, line):
-    var idx = 0
-    var ch = line[0]
-    while ch != ' ' and idx < line.len:
-      idx+=1
-      ch = line[idx]
-    var idx2 = idx
-    while ch != '|' and idx2 < line.len:
-      idx2 += 1
-      ch = line[idx2]
-    let hash = substr(line, 0, idx - 1)
-    let path = substr(line, idx2 + 2)
-    result[path] = hash
+    let parts = line.split(hashPathDelim)
+    if parts.len == 2:
+      let hashPart = parts[0].strip()
+      let path = parts[1].strip()
+      result[path] = hashPart
 
 
 proc validateManifestCommand(): void =
